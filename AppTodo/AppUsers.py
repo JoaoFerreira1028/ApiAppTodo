@@ -105,10 +105,10 @@ def delete_user(username):
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Deletar o usuário
+    # Delete user
     users_collection.delete_one({"_id": user["_id"]})
 
-    # Deletar todas as tasks associadas a este user
+    # Delete all tasks associated with user
     todo_collection.delete_many({"user": str(user["_id"])})
 
     return jsonify({"message": "User and associated tasks deleted"}), 200
