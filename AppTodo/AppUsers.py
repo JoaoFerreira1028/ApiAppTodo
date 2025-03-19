@@ -1,8 +1,12 @@
 from flask import Flask, request, jsonify
 from pymongo import MongoClient
 from bson.objectid import ObjectId
+import bcrypt
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 
 app = Flask(__name__)
+app.config["JWT_SECRET_KEY"] = "OjgPlWVoHvkzjIdl" 
+jwt = JWTManager(app)
 
 # MongoDB connection setup
 client = MongoClient("mongodb+srv://joaompferreira00:OjgPlWVoHvkzjIdl@cluster0.6rxdm.mongodb.net/sample_mflix?retryWrites=true&w=majority&appName=Cluster0")
@@ -43,7 +47,7 @@ def get_user(username):
         return jsonify(serialize_user(user))
     return jsonify({"error": "User not found"}), 404
 
-# POST route - Create new user
+# POST route - Create new user with hashed password
 @app.route('/users', methods=['POST'])
 def create_user():
     data = request.json
@@ -53,11 +57,22 @@ def create_user():
     if users_collection.find_one({"username": data["username"]}):
         return jsonify({"error": "Username already exists"}), 400
 
-    result = users_collection.insert_one(data)
+    # Hash the password
+    hashed_password = bcrypt.hashpw(data["password"].encode('utf-8'), bcrypt.gensalt())
+
+    # Create the user data with hashed password
+    user_data = {
+        "username": data["username"],
+        "fullname": data["fullname"],
+        "email": data["email"],
+        "password": hashed_password.decode('utf-8')  # Store as string
+    }
+
+    result = users_collection.insert_one(user_data)
     return jsonify({"id": str(result.inserted_id), "message": "User created"}), 201
 
-# PUT route - Update user by username
 @app.route('/users/<username>', methods=['PUT'])
+@jwt_required()
 def update_user(username):
     data = request.json
     if not data:
@@ -67,7 +82,6 @@ def update_user(username):
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Check if new username already exists
     new_username = data.get("username")
     if new_username and new_username != username:
         if users_collection.find_one({"username": new_username}):
@@ -79,19 +93,13 @@ def update_user(username):
             updated_data[field] = data[field]
 
     if updated_data:
-        if "username" in updated_data:
-            # Update the username in MongoDB
-            users_collection.update_one({"username": username}, {"$set": updated_data})
-            # Update the username in the URL
-            return jsonify({"message": f"User {username} updated to {updated_data['username']}"}), 200
-        else:
-            users_collection.update_one({"username": username}, {"$set": updated_data})
-            return jsonify({"message": "User updated"}), 200
+        users_collection.update_one({"username": username}, {"$set": updated_data})
+        return jsonify({"message": "User updated"}), 200
     else:
         return jsonify({"error": "No valid fields to update"}), 400
 
-# DELETE route - Delete user by username
 @app.route('/users/<username>', methods=['DELETE'])
+@jwt_required()
 def delete_user(username):
     result = users_collection.delete_one({"username": username})
     if result.deleted_count == 1:
@@ -100,12 +108,10 @@ def delete_user(username):
 
 # GET route - List all tasks for a specific user
 @app.route('/todos', methods=['GET'])
+@jwt_required()
 def list_todos():
-    user_id = request.args.get('user')  # Get the user ID from query parameters
-    if not user_id:
-        return jsonify({"error": "User ID is required"}), 400
-    
-    todos = list(todo_collection.find({"user": user_id}))
+    current_user_id = get_jwt_identity()
+    todos = list(todo_collection.find({"user": current_user_id}))
     return jsonify([serialize_todo(t) for t in todos])
 
 # GET route - Fetch task by ID
@@ -116,25 +122,23 @@ def get_todo(todo_id):
         return jsonify(serialize_todo(todo))
     return jsonify({"error": "Task not found"}), 404
 
-# POST route - Create new task
+# POST route - Create new task (JWT protected)
 @app.route('/todos', methods=['POST'])
+@jwt_required()
 def create_todo():
+    current_user_id = get_jwt_identity()
     data = request.json
-    if not data or "title" not in data or "user" not in data:
+    if not data or "title" not in data:
         return jsonify({"error": "Incomplete data"}), 400
-    
+
     data["completed"] = False
-    
-    # Check if user exists
-    user = users_collection.find_one({"_id": ObjectId(data["user"])})
-    if not user:
-        return jsonify({"error": "User not found"}), 400
-    
+    data["user"] = current_user_id  # Associar task ao user autenticado
+
     result = todo_collection.insert_one(data)
     return jsonify({"id": str(result.inserted_id), "message": "Task created"}), 201
 
-# PUT route - Update task by ID
 @app.route('/todos/<todo_id>', methods=['PUT'])
+@jwt_required()
 def update_todo(todo_id):
     data = request.json
     if not data:
@@ -155,13 +159,31 @@ def update_todo(todo_id):
     else:
         return jsonify({"error": "No valid fields to update"}), 400
 
-# DELETE route - Delete task by ID
 @app.route('/todos/<todo_id>', methods=['DELETE'])
+@jwt_required()
 def delete_todo(todo_id):
     result = todo_collection.delete_one({"_id": ObjectId(todo_id)})
     if result.deleted_count == 1:
         return jsonify({"message": "Task deleted"}), 200
     return jsonify({"error": "Task not found"}), 404
+
+# POST route - User login with JWT using Flask-JWT-Extended
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    if not data or not all(k in data for k in ("username", "password")):
+        return jsonify({"error": "Username and password are required"}), 400
+
+    user = users_collection.find_one({"username": data["username"]})
+    if not user:
+        return jsonify({"error": "Invalid username or password"}), 401
+
+    if bcrypt.checkpw(data["password"].encode('utf-8'), user["password"].encode('utf-8')):
+        # Create access token valid for 1 hour
+        access_token = create_access_token(identity=str(user["_id"]))
+        return jsonify({"message": "Login successful", "access_token": access_token}), 200
+    else:
+        return jsonify({"error": "Invalid username or password"}), 401
 
 if __name__ == '__main__':
     app.run(debug=True)
