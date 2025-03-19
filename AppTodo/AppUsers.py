@@ -57,15 +57,17 @@ def create_user():
     if users_collection.find_one({"username": data["username"]}):
         return jsonify({"error": "Username already exists"}), 400
 
+    if users_collection.find_one({"email": data["email"]}):
+        return jsonify({"error": "Email already exists"}), 400
+
     # Hash the password
     hashed_password = bcrypt.hashpw(data["password"].encode('utf-8'), bcrypt.gensalt())
 
-    # Create the user data with hashed password
     user_data = {
         "username": data["username"],
         "fullname": data["fullname"],
         "email": data["email"],
-        "password": hashed_password.decode('utf-8')  # Store as string
+        "password": hashed_password.decode('utf-8')
     }
 
     result = users_collection.insert_one(user_data)
@@ -82,29 +84,34 @@ def update_user(username):
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    new_username = data.get("username")
-    if new_username and new_username != username:
-        if users_collection.find_one({"username": new_username}):
-            return jsonify({"error": "Username already exists"}), 400
-
     updated_data = {}
+
+    # Atualiza todos os campos diretamente (inclui hash para password)
     for field in ["username", "fullname", "email", "password"]:
         if field in data:
-            updated_data[field] = data[field]
+            if field == "password":
+                hashed_password = bcrypt.hashpw(data["password"].encode('utf-8'), bcrypt.gensalt())
+                updated_data["password"] = hashed_password.decode('utf-8')
+            else:
+                updated_data[field] = data[field]
 
-    if updated_data:
-        users_collection.update_one({"username": username}, {"$set": updated_data})
-        return jsonify({"message": "User updated"}), 200
-    else:
-        return jsonify({"error": "No valid fields to update"}), 400
+    users_collection.update_one({"username": username}, {"$set": updated_data})
+    return jsonify({"message": "User updated"}), 200
 
 @app.route('/users/<username>', methods=['DELETE'])
 @jwt_required()
 def delete_user(username):
-    result = users_collection.delete_one({"username": username})
-    if result.deleted_count == 1:
-        return jsonify({"message": "User deleted"}), 200
-    return jsonify({"error": "User not found"}), 404
+    user = users_collection.find_one({"username": username})
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    # Deletar o usuário
+    users_collection.delete_one({"_id": user["_id"]})
+
+    # Deletar todas as tasks associadas a este user
+    todo_collection.delete_many({"user": str(user["_id"])})
+
+    return jsonify({"message": "User and associated tasks deleted"}), 200
 
 # GET route - List all tasks for a specific user
 @app.route('/todos', methods=['GET'])
@@ -179,11 +186,18 @@ def login():
         return jsonify({"error": "Invalid username or password"}), 401
 
     if bcrypt.checkpw(data["password"].encode('utf-8'), user["password"].encode('utf-8')):
-        # Create access token valid for 1 hour
         access_token = create_access_token(identity=str(user["_id"]))
-        return jsonify({"message": "Login successful", "access_token": access_token}), 200
+
+        return jsonify({
+            "message": "Login successful",
+            "access_token": access_token,
+            "user_id": str(user["_id"]),
+            "fullname": user["fullname"],
+            "username": user["username"],
+            "email": user["email"]
+        }), 200
     else:
         return jsonify({"error": "Invalid username or password"}), 401
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port='5000')
