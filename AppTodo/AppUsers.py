@@ -86,7 +86,6 @@ def update_user(username):
 
     updated_data = {}
 
-    # Atualiza todos os campos diretamente (inclui hash para password)
     for field in ["username", "fullname", "email", "password"]:
         if field in data:
             if field == "password":
@@ -95,7 +94,9 @@ def update_user(username):
             else:
                 updated_data[field] = data[field]
 
-    users_collection.update_one({"username": username}, {"$set": updated_data})
+    # Atualiza o usuário sem perder os todos
+    users_collection.update_one({"_id": user["_id"]}, {"$set": updated_data})
+
     return jsonify({"message": "User updated"}), 200
 
 @app.route('/users/<username>', methods=['DELETE'])
